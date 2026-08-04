@@ -1,0 +1,600 @@
+---
+title: "Diagnosi di malattia cardiaca tramite Decision Tree"
+author: "Enrico Moioli"
+date: "14/11/2024"
+output:
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+```{r include=FALSE}
+library(kableExtra)
+library(tidyverse)
+library(knitr)
+library(corrplot)
+library(patchwork)
+library(tidymodels)
+library(rpart)
+library(rpart.plot)
+library(vip)
+
+df <- read_csv("Heart.csv")
+
+knitr::opts_chunk$set(warning=FALSE, message=FALSE)
+
+```
+
+# 1. Introduzione
+
+Il dataset "Heart Disease" disponibile nel UCI Machine Learning Repository [**qui**](https://archive.ics.uci.edu/dataset/45/heart+disease) contiene 303 soggetti e 14 variabili, tra cui età, sesso, pressione sanguigna, livelli di colesterolo e glucosio. L'obiettivo di tale dataframe, è prevedere la presenza di malattie cardiache con una variabile target con valori 0 (assenza) e 1 (presenza). È ampiamente utilizzato per compiti di classificazione in ambito medico e sanitario.
+
+**Definizione del quesito sperimentale**
+
+Quali variabili demografiche, fisiologiche e biologiche presenti nel dataset "Heart Disease" sono i migliori predittori per la presenza di malattia cardiaca nei soggetti analizzati?
+
+**Metodo**
+
+Attraverso l'indagine di quali siano le variabili più strettamente collegate alle malattie cardiache, si mira alla creazione di un modello di machine learning predittivo.
+
+# 2. Analisi delle caratteristiche e delle relazioni del dataframe:
+
+```{r include=TRUE, echo=FALSE }
+
+# Rinomina le colonne del dataframe 'df'
+colnames(df) <- c(
+  "età", 
+  "genere", 
+  "dolore_toracico", 
+  "pressione_sanguigna", 
+  "colesterolo", 
+  "glicemia", 
+  "ecg", 
+  "frequenza_cardiaca", 
+  "angina_da_esercizio", 
+  "depressione_st", 
+  "pendenza_st", 
+  "numero_vasi_colorati", 
+  "talassemia", 
+  "diagnosi"
+)
+colnames(df)
+
+df_tabella <- data.frame(
+  Variabile = c("età", "genere", "dolore_toracico", "pressione_sanguigna", "colesterolo", 
+                "glicemia", "ecg", "frequenza_cardiaca", 
+                "angina_da_esercizio", "depressione_st_indotta", "pendenza_st", 
+                "numero_vasi_colorati", "talassemia", "diagnosi"),
+  Tipo = c("Numerica", "Categoriale", "Categoriale", "Numerica", "Numerica", 
+           "Categoriale", "Categoriale", "Numerica", "Categoriale", "Numerica", 
+           "Categoriale", "Numerica", "Categoriale", "Target"),
+  Descrizione = c("Età del paziente", "Sesso del paziente (1 = maschio, 0 = femmina)", 
+                  "Tipo di dolore toracico (0 = nessun dolore, 1 = poco, 2 = molto, 3 = estremo)", 
+                  "Pressione sanguigna a riposo (mm Hg)", "Livello di colesterolo nel sangue (mg/dl)", 
+                  "Zucchero nel sangue a digiuno (> 120 mg/dl)", 
+                  "Elettrocardiogramma a riposo (0 = normale, 1 = anomalo, 2 = grave)", 
+                  "Frequenza cardiaca massima raggiunta durante l'esercizio", 
+                  "Angina indotta dall'esercizio (1 = sì, 0 = no)", 
+                  "Depressione del segmento ST indotta dall'esercizio rispetto al riposo", 
+                  "Pendenza del segmento ST durante l'esercizio (1, 2, 3)", 
+                  "Numero di vasi principali (0-3) visibili con fluoroscopia", 
+                  "Condizione di thalassemia (1 = normale, 2 = difetto reversibile, 3 = difetto irreversibile)", 
+                  "Diagnosi di malattia cardiaca (0 = assente, 1 = presente)")
+)
+
+kable(df_tabella %>% mutate(Variabile = str_replace_all(Variabile, "_", " ")), booktabs = TRUE) %>%
+  kable_styling(latex_options = c("scale_down", "hold_position"), font_size = 9) %>%
+  column_spec(1, width = "3cm") %>%
+  column_spec(2, width = "2.2cm") %>%
+  column_spec(3, width = "6.5cm")
+```
+
+**Variabile Target**
+
+```{r include=FALSE }
+table(df$`diagnosi`)
+# tabella con la percentuale
+per <- df %>%
+  count(diagnosi) %>%
+  mutate("%"= prop.table(n)*100)
+```
+
+```{r include=TRUE, echo=FALSE }
+kable(per)
+```
+
+*Nel dataset, il **45,5%** dei soggetti non presenta malattia cardiaca, mentre il **54,5%** dei soggetti presenta malattia cardiaca.*
+
+```{r include=FALSE}
+
+# missing values?
+colSums(is.na(df))
+
+```
+
+*Dopo aver rinominato e verificato eventuali N.A. proseguo rendendo fattoriali le variabili adatte.*
+
+```{r include=TRUE, echo = FALSE}
+df <- df %>%
+  mutate(
+    genere = factor(genere, levels = c(0, 1), labels = c("F", "M")),
+    dolore_toracico = factor(dolore_toracico, levels = c(0, 1, 2, 3), labels = c("Nessun Dolore", "Poco", "Molto", "Estremo")),
+    glicemia = factor(glicemia, levels = c(0, 1), labels = c("Nella norma", "Alta")),
+    ecg = factor(ecg, levels = c(0, 1, 2), labels = c("Normale", "Anomalo", "Grave")),
+    angina_da_esercizio = factor(angina_da_esercizio, levels = c(0, 1), labels = c("No", "Sì")),
+    talassemia = factor(talassemia, levels = c(0, 1, 2, 3), labels = c("Non Presente", "Normale", "Difetto Reversibile", "Difetto Irreversibile")),
+    diagnosi = factor(diagnosi, levels = c(0, 1), labels = c("Assente", "Presente"))
+  )
+
+
+
+kable(head(df, 7), caption = "Prime 7 righe del dataframe", booktabs = TRUE) %>%
+  kable_styling(latex_options = c("scale_down", "hold_position"), font_size = 8)
+
+
+```
+
+*Procedo poi con qualche grafico che metta in luce eventuali relazioni.*
+
+```{r include=TRUE, echo = FALSE, fig.width=10, fig.height=16}
+
+# Crea una lista per salvare i grafici
+grafici <- list()
+
+# Ciclo per ogni variabile nel dataframe
+for (col_name in names(df)) {
+  # Verifica il tipo di variabile
+  if (is.numeric(df[[col_name]]) && length(unique(df[[col_name]])) > 10) {
+    # Istogramma per variabili numeriche con molti valori unici
+    g <- ggplot(df, aes_string(x = col_name)) +
+      geom_histogram(binwidth = 5, fill = "skyblue", color = "black") +
+      labs(title = paste("", col_name), x = col_name, y = "Frequenza") +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 9))
+  } else if (is.factor(df[[col_name]]) || is.character(df[[col_name]]) || 
+             (is.numeric(df[[col_name]]) && length(unique(df[[col_name]])) <= 10)) {
+    # Grafico a barre per variabili categoriche o numeriche con pochi valori unici
+    g <- ggplot(df, aes_string(x = col_name)) +
+      geom_bar(fill = "lightcoral", color = "black") +
+      labs(title = paste("", col_name), x = col_name, y = "Frequenza") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+            plot.title = element_text(size = 9))
+  } else {
+    next  # Salta le variabili che non sono né numeriche né categoriche
+  }
+  
+  # Aggiungi il grafico alla lista
+  grafici[[col_name]] <- g
+}
+
+# Unisci i grafici in una griglia con patchwork
+wrap_plots(grafici, ncol = 3)
+
+```
+
+**Risultati:**
+
+*Dai grafici possiamo dedurre che il nostro campione:*
+
+-   *è composto principalmente da uomini,*
+
+-   *la distribuzione dei dati nelle variabili numeriche tende a disporsi su una curva normale,*
+
+## 2.2 Relazioni fra le variabili numeriche e la variabile target
+
+```{r include=TRUE, echo=FALSE}
+
+# con genere
+t_genere <- df %>%
+  group_by(`genere`) %>%
+  count(`diagnosi`) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+# crea il grafico con le percentuali
+g_genere <- ggplot(t_genere, aes(x = `genere`, y = percentage, fill = `diagnosi`)) +
+  geom_bar(stat = "identity", position = "dodge") +  # Usa 'stat = "identity"
+  labs(title = "Genere e malattie cardiache",
+       x = "Genere", y = "Percentuale") +
+  scale_fill_manual(values = c("Assente" = "green3", "Presente" = "purple4")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+g_genere
+```
+
+*Le donne sono percentualmente più a rischio di malattia cardiaca.*
+
+```{r include=TRUE, echo=FALSE}
+# con età
+g_età <- ggplot(df, aes(x = età, fill = `diagnosi`)) +
+  geom_histogram(position = "stack", bins = 20, alpha = 0.7) +
+  labs(title = "Età e malattie cardiache",
+       x = "Anni", y = "Numero di soggetti") +
+  scale_fill_manual(values = c("Assente" = "green3", "Presente" = "purple4")) +
+  theme_minimal()
+
+
+g_età
+```
+
+*I soggetti sono principalmente fra i 35 e i 70 anni di età, con proporzioni fra malati e sani che tendono ad invertirsi dopo i 55 anni.*
+
+```{r include=TRUE, echo=FALSE}
+# con frequenza cardiaca
+g_bpm <- ggplot(df, aes(x = `diagnosi`, y = `frequenza_cardiaca`, fill = `diagnosi`)) +
+  geom_boxplot() +
+  labs(title = "Relazione fra frequenza cardiaca e malattie cardiache", 
+       x = "", y = "Bpm") +
+  scale_fill_manual(values = c("Assente" = "green3", "Presente" = "purple4")) +
+  theme_minimal()
+
+
+g_bpm
+
+```
+
+*I soggetti malati hanno una frequenza cardiaca massima mediamente superiore.*
+
+```{r include=TRUE, echo=FALSE}
+
+# con colesterolo
+g_col <- ggplot(df, aes(x = `diagnosi`, y = colesterolo, fill = `diagnosi`)) +
+  geom_violin() +
+  labs(title = "Colesterolo e malattie cardiache", 
+       x = "", y = "Colesterolo") +
+  scale_fill_manual(values = c("Assente" = "green3", "Presente" = "purple4")) +
+  theme_minimal()
+
+
+g_col
+```
+
+*Valori di colesterolo estremamente alti sono solo nei soggetti malati.*
+
+```{r include=TRUE, echo=FALSE}
+# con età e pressione sanguigna
+g_età_press <- ggplot(df, aes(x = età, y = pressione_sanguigna, color = `diagnosi`)) +
+  geom_point() +
+  labs(title = "Relazione tra età e pressione sanguigna rispetto alla diagnosi", 
+       x = "Anni", y = "Pressione sangigna") +
+  scale_color_manual(values = c("Assente" = "green3", "Presente" = "purple4")) +
+  theme_minimal()
+
+
+# Visualizza i grafici
+g_età_press
+```
+
+*I soggetti giovani sembrano mediamente più affetti che quelli over 55.*
+
+```{r include=TRUE, echo=FALSE}
+cor_età_press <- cor(df$età, df$pressione_sanguigna, method = "pearson")
+cor_età_press
+```
+
+*La relazione fra età e pressione sanguigna è debole.*
+
+## 2.3 Correlazioni fra le variabili numeriche
+
+```{r include=TRUE, echo=FALSE}
+
+# Calcolo la matrice di correlazione per tutte le variabili numeriche
+matrix <- cor(select(df, where(is.numeric)), method = "kendall")
+
+# Visualizzazione della correlazione
+
+corrplot(matrix, 
+         method = "circle", 
+         type = "lower", 
+         title = "Correlazione (cerchi)", 
+         mar = c(0, 0, 1, 0),   
+         tl.cex = 0.8,
+         tl.col = "sienna4",
+         col = colorRampPalette(c("darkgreen", "gold", "firebrick"))(200),
+         addgrid.col = "snow",
+         diag = FALSE)
+
+```
+
+*Si noti il triangolo di correlazioni fra pendenza del segmento st, frequenza cardiaca e depressione del segmento st.*
+
+# 3. Machine Learning
+
+```{r include=FALSE, eval=TRUE}
+
+#splitting data
+set.seed(987)
+data_split<- initial_split(df, strata=diagnosi) 
+data_split
+
+data_train <- training(data_split)
+data_train
+data_test <- testing(data_split)
+data_test
+
+# controllo le percentuali
+pert <- data_test %>%
+  count(diagnosi) %>%
+  mutate(per1= prop.table(n)*100)
+
+pert
+
+#Cross validation 10 fold
+data_cv <- vfold_cv(data_train)
+
+
+# creo decision tree recipe
+tree_recipe <- 
+  recipe(diagnosi ~ età + genere + dolore_toracico + pressione_sanguigna + colesterolo + 
+           glicemia + ecg + frequenza_cardiaca + angina_da_esercizio + depressione_st + 
+           pendenza_st + numero_vasi_colorati + talassemia, data = df) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric(), -all_outcomes())    
+
+
+tree_recipe %>%
+  prep() %>%
+  bake(new_data = data_train)
+
+```
+
+*Dopo aver preparato la Recipe per il mio algoritmo, vado a creare un Machine Learning. Visto anche il numero di variabili categoriche appare indicato il Decision Tree per la variabile Target dicotomica.*
+
+```{r include=TRUE}
+
+# Specifico il modello "Decision Tree"
+tree_spec <- decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+# Creo il workflow unendo il recipe e il modello
+tree_workflow <- workflow() %>%
+  add_recipe(tree_recipe) %>%  
+  add_model(tree_spec)  
+
+# CROSS VALIDATION
+tree_results <- tree_workflow %>%
+  fit_resamples(resamples = data_cv,
+    control = control_resamples(save_pred = TRUE, verbose = TRUE),
+    metrics = metric_set(roc_auc, accuracy)  
+  )
+
+# Raccolgo i risultati
+tree_results %>%
+  collect_metrics()
+
+# Training finale
+tree_wf_fit <- tree_workflow %>% 
+  fit(data = data_train)
+
+# Estraggo il modello
+tree_fit <- tree_wf_fit %>% 
+  extract_fit_parsnip() 
+
+```
+
+*Dopo l'addestramento possiamo finalmente vedere il nostro albero decisionale:*
+
+```{r include=TRUE, echo=FALSE}
+
+rpart.plot(tree_fit$fit, roundint = FALSE)
+
+```
+
+*Nonostante alcune foglie del nostro albero contengano basse percentuali, i valori delle foglie verdi (.83, .93, .90) indicano buone capacità di individuare i soggetti con una cadiopatia.*
+
+```{r include=TRUE, echo=FALSE}
+
+vip(tree_fit, geom = "col", aesthetics = list(fill = "brown", color = "darkblue"))
+
+```
+
+*Questo grafico a barre mostra le variabili che influenzano maggiormente le decisioni del modello.* *La reversibilità o meno della talassemia e il numero di vasi principali visibili con fluoroscopia risultano esserene i primi tre predittori.*
+
+*Verifichiamo ora le metriche del modello creato:*
+
+```{r include=TRUE, echo=FALSE}
+# Raccogliamo le metriche calcolate durante la cross-validation
+metrics <- tree_results %>%
+  collect_metrics()
+
+# Visualizziamo le metriche in una tabella
+kable(metrics, caption = "Metriche del modello (Accuratezza e AUC)", digits = 3)
+
+```
+
+*Seppure non ottimali, i valori di precisione e di area sotto la curva roc sono entrambi superiori a .80 indicano che il modello è in grado di distinguere tra le classi con una buona performance.*
+
+### 3.1 Verifica di performance sui dati test
+
+*Proseguendo con il test del modello, otteniamo i seguenti risultati:*
+
+```{r include=TRUE, echo=FALSE}
+
+# Adatto il modello sui dati di test
+tree_last_fit <- tree_workflow %>% 
+  last_fit(data_split)
+
+# Raccogo le metriche dai dati di test
+tree_last_fit %>% collect_metrics()
+
+tree_last_fit %>% 
+  collect_predictions() %>% 
+  roc_curve(truth = diagnosi, .pred_Assente) %>% 
+  autoplot() +
+  labs(title = "Curva ROC per il modello di Decision Tree",
+       x = "Veri Positivi (Sensibilità)",
+       y = "Falsi Positivi (1 - Specificità)") +
+  theme_minimal() 
+
+```
+
+*Vediamo la **matrice di confusione** per analizzare meglio i risultati ottenuti:*
+
+```{r include=TRUE, echo=FALSE}
+
+# Raccogliamo le previsioni dai dati di test
+tree_predictions <- tree_last_fit %>% collect_predictions()
+# matrice di confusione
+conf_mat(tree_predictions, truth = diagnosi, estimate = .pred_class)
+```
+
+*I risultati del modello sui dati test sono buoni, possiamo tuttavia pensare a come migliorare.*
+
+## 3.2 Tuning
+
+*Per migliorare le prestazioni del modello, possiamo considerare il tuning dei parametri. In particolare, per l'albero decisionale:*
+
+-   tuning del parametro di potatura dell'albero (cost_complexity);
+-   profondità dell'albero (tree_depth);
+-   numero minimo di osservazioni per una divisione in un nodo (min_n).
+
+*Definizione della griglia di tuning:*
+
+```{r include=TRUE}
+tree_spec_tuned <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+grid <- grid_regular(
+  cost_complexity(),
+  tree_depth(),
+  min_n(),
+  levels = 5
+)
+```
+
+*Aggiornamento del workflow e tuning:*
+
+```{r include=TRUE}
+tree_workflow_tuned <- workflow() %>%
+  add_recipe(tree_recipe) %>%
+  add_model(tree_spec_tuned)
+
+tune_results <- tree_workflow_tuned %>%
+  tune_grid(
+    resamples = data_cv,
+    grid = grid,
+    metrics = metric_set(roc_auc, accuracy)
+  )
+```
+
+*Visualizzazione dei risultati di tuning:*
+
+```{r include=TRUE, echo=FALSE}
+tune_results %>%
+  collect_metrics() %>%
+  filter(.metric == "roc_auc") %>%
+  arrange(desc(mean))
+```
+
+*Visualizza i migliori modelli in base a ROC AUC e accuracy:*
+
+```{r include=TRUE, echo=FALSE}
+# Visualizza i 5 migliori modelli per ROC AUC
+best_models_auc <- tune_results %>% show_best(metric = "roc_auc", n = 5)
+print(best_models_auc)
+
+#Visualizza i 5 migliori per accuracy
+best_models_accu <- tune_results %>% show_best(metric = "accuracy", n = 5)
+print(best_models_accu)
+
+
+```
+
+*Purtroppo risulta difficile individuare un modello ottimo per entrambi i valori di ROC AUC e accuracy.*
+
+*Selezione del migliore modello per accuracy e finalizzazione del modello:*
+
+```{r include=TRUE, echo=FALSE}
+best_tree <- tune_results %>%
+  select_best(metric = "accuracy")
+
+print(best_tree)
+
+final_tree <- finalize_workflow(tree_workflow_tuned, best_tree) %>%
+  fit(data = data_train)
+```
+
+```{r include=TRUE, echo=FALSE}
+# Raccolgo le metriche calcolate durante la cross-validation
+metrics_tun <- tune_results %>%
+  collect_metrics()
+
+# Filtro i risultati per il modello Preprocessor1_Model036
+metrics_tun_filtered <- metrics_tun %>%
+  filter(.config == "Preprocessor1_Model036")
+
+# Visualizziamo le metriche filtrate in una tabella
+kable(metrics_tun_filtered, caption = "Metriche del modello Preprocessor1_Model036 (Accuratezza e AUC)", digits = 3)
+
+
+```
+
+*Il nostro modello con valore accuracy più alto risulta avere profondità **8** e numero minimo di soggetti **11**; con valori di accuracy .814 e roc_auc .834*
+
+*Visualizzare l'albero decisionale:*
+
+```{r include=TRUE, echo=FALSE}
+# Estraggo il modello addestrato dall'oggetto workflow
+final_fit <- final_tree %>% extract_fit_parsnip()
+
+# Visualizza l'albero decisionale
+rpart.plot(final_fit$fit, roundint = FALSE, type = 2)
+
+# Visualizza l'importanza delle variabili
+vip(final_fit, geom = "col", aesthetics = list(fill = "lightblue", color = "darkblue"))
+```
+
+*In questo secondo modello, emerge l'importanza della variabile Depressione del segmento ST indotta dall’esercizio rispetto al riposo, che si posiziona al terzo posto.*
+
+### 3.3 Seconda verifica di performance sui dati test (con tuning)
+
+*Proseguendo con il test del modello sul dataset di test, otteniamo i seguenti risultati:*
+
+```{r include=TRUE, echo=FALSE}
+
+# Prevedi sui dati di test
+tree_predictions <- predict(final_tree, new_data = data_test, type = "prob")
+
+# Unisci le previsioni con le etichette reali
+tree_predictions <- bind_cols(data_test, tree_predictions)
+
+# Raccogliamo le metriche dai dati di test
+tree_predictions %>%
+  roc_curve(truth = diagnosi, .pred_Assente) %>%
+  autoplot() +
+  labs(title = "Curva accuracy per il modello di Decision Tree",
+       x = "Veri Positivi (Sensibilità)",
+       y = "Falsi Positivi (1 - Specificità)") +
+  theme_minimal()
+
+
+
+```
+
+*Vediamo la **matrice di confusione** per analizzare meglio i risultati ottenuti:*
+
+```{r include=TRUE, echo=FALSE}
+# Prevedi la classe (non la probabilità)
+tree_predictions_class <- predict(final_tree, new_data = data_test, type = "class")
+
+# Unisci le previsioni con le etichette reali (diagnosi)
+tree_predictions <- bind_cols(data_test %>% select(diagnosi), tree_predictions_class)
+
+# Matrice di confusione
+conf_mat(tree_predictions, truth = diagnosi, estimate = .pred_class)
+
+```
+
+*Il tuning ha equilibrato i risultati relativi, ma ha peggiorato quelli assoluti, con 15 errori su 77.*
+
+# 4. Conclusione
+
+Il Decision Tree creato si comporta tutto sommato bene, anche se non ottimamente. Inoltre, il tuning ha cambiato leggermente i risultati ma non abbastanza da poterci ritenere soddisfatti. Plausibilmente altri modelli di Machine Learning o una ridefinizione del pool di variabili utilizzate nella ricetta dell'albero, potrebbero dare risultati più soddisfacenti.
