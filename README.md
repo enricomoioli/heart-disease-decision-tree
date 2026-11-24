@@ -6,7 +6,7 @@ Analisi predittiva su un dataset clinico ("Heart Disease", UCI Machine Learning 
 
 - `analysis.Rmd` — codice R completo: pulizia dati, analisi esplorativa, correlazioni, modello Decision Tree (rpart), tuning degli iperparametri, valutazione delle performance
 - `report.pdf` — report finale con grafici e commento dei risultati
-- `data/heart.csv` — dataset utilizzato
+- `Heart.csv` — dataset utilizzato
 
 ## Metodo
 
